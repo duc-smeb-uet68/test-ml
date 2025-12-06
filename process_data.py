@@ -83,7 +83,14 @@ def aggregate_features(df_lc):
 
     # 1. Các đặc trưng cơ bản theo từng Filter
     aggs = {
-        'Flux_corr': ['min', 'max', 'mean', 'median', 'std'],
+        'Flux_corr': [
+            'mean', 'std',
+            'min', 'max',
+            lambda x: np.percentile(x, 5),  # q05
+            lambda x: np.percentile(x, 95),  # q95
+            lambda x: skew(x, nan_policy='omit') if len(x) > 2 else 0,  # Giữ lại Skew!
+            lambda x: kurtosis(x, nan_policy='omit') if len(x) > 2 else 0  # Giữ lại Kurtosis!
+        ],
         'Flux_err_corr': ['mean'],
         'Time (MJD)': ['min', 'max', 'count']  # count là số lượng quan sát
     }
@@ -224,8 +231,8 @@ if __name__ == "__main__":
         print(f"✅ Đã xử lý xong Train Set. Shape: {train_df.shape}")
 
         # Lưu ra CSV để dùng cho các bước modeling sau
-        train_df.to_csv('processed/processed_train_features.csv', index=False)
-        print("💾 Đã lưu file: processed/processed_train_features.csv")
+        train_df.to_csv('processed_data/processed_train_features.csv', index=False)
+        print("💾 Đã lưu file: processed_data/processed_train_features.csv")
     else:
         print("❌ Không tìm thấy train_log.csv")
 
@@ -235,7 +242,7 @@ if __name__ == "__main__":
         print(f"✅ Đã xử lý xong Test Set. Shape: {test_df.shape}")
 
         # Lưu ra CSV
-        test_df.to_csv('processed/processed_test_features.csv', index=False)
-        print("💾 Đã lưu file: processed/processed_test_features.csv")
+        test_df.to_csv('processed_data/processed_test_features.csv', index=False)
+        print("💾 Đã lưu file: processed_data/processed_test_features.csv")
     else:
         print("❌ Không tìm thấy test_log.csv")

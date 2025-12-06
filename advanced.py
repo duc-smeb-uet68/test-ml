@@ -4,6 +4,8 @@ import os
 import gc
 from tqdm import tqdm
 import lightgbm as lgb
+import xgboost as xgb
+from catboost import CatBoostClassifier, Pool
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, roc_auc_score
 
@@ -166,12 +168,15 @@ def process_dataset_advanced(log_path, is_train=True):
 # B1: Tạo Features Mới
 # Chú ý: Bước này sẽ mất thời gian hơn bước trước do hàm calculate_shape_features
 # Nếu máy bạn yếu, hãy thử trên 1 split trước
-train_df_adv = process_dataset_advanced('data/train_log.csv', is_train=True)
-test_df_adv = process_dataset_advanced('data/test_log.csv', is_train=False)
+# train_df_adv = process_dataset_advanced('data/train_log.csv', is_train=True)
+# test_df_adv = process_dataset_advanced('data/test_log.csv', is_train=False)
+#
+# # Lưu lại ngay lập tức
+# train_df_adv.to_csv('processed_data/train_advanced.csv', index=False)
+# test_df_adv.to_csv('processed_data/test_advanced.csv', index=False)
 
-# Lưu lại ngay lập tức
-train_df_adv.to_csv('processed/train_advanced.csv', index=False)
-test_df_adv.to_csv('processed/test_advanced.csv', index=False)
+train_df_adv = pd.read_csv('processed_data/processed_train_features.csv')
+test_df_adv = pd.read_csv('processed_data/processed_test_features.csv')
 
 # B2: Train LightGBM với thông số tinh chỉnh hơn
 print("🚀 Training Advanced Model...")
@@ -190,14 +195,14 @@ lgb_params_adv = {
     'objective': 'binary',
     'metric': 'auc',
     'boosting_type': 'gbdt',
-    'n_estimators': 3000,  # Tăng số lượng cây
-    'learning_rate': 0.02,  # Giảm LR để học kỹ hơn
-    'num_leaves': 40,  # Tăng nhẹ độ phức tạp
-    'max_depth': 8,  # Giới hạn độ sâu để tránh overfit với dữ liệu nhiễu
+    'n_estimators': 3000,
+    'learning_rate': 0.02,
+    'num_leaves': 35,
+    'max_depth': -1,
     'min_child_samples': 30,
     'subsample': 0.8,
-    'colsample_bytree': 0.6,  # Giảm feature sampling để cây đa dạng hơn
-    'reg_alpha': 0.5,  # Tăng L1 Regularization (quan trọng khi thêm nhiều feature)
+    'colsample_bytree': 0.6,
+    'reg_alpha': 0.5,
     'reg_lambda': 0.5,
     'scale_pos_weight': scale_pos_weight,
     'random_state': 42,
@@ -221,6 +226,8 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         eval_metric='auc',
         callbacks=[lgb.early_stopping(150, verbose=False)]
     )
+
+
 
     oof_preds[val_idx] = clf.predict_proba(X_val)[:, 1]
     test_preds += clf.predict_proba(X_test)[:, 1] / 5
