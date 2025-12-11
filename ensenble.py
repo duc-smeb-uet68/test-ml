@@ -1,155 +1,85 @@
 import pandas as pd
 import numpy as np
-import lightgbm as lgb
-from catboost import CatBoostClassifier, Pool
-from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, roc_auc_score
-import gc
 
-# 0.4311
+# 1. Load các file OOF (Validation)
+oof_cat = pd.read_csv('oof_catboost.csv')
+oof_lgbm = pd.read_csv('oof_lgbm.csv')
+oof_xgb = pd.read_csv('oof_xgb.csv')
 
-# -------------------------------------------------------------------------------------
-# 1. LOAD DATA (Dữ liệu đã tạo ở bước trước)
-# -------------------------------------------------------------------------------------
-print("📥 Loading Advanced Data...")
-train_df = pd.read_csv('train_advanced.csv')
-test_df = pd.read_csv('test_advanced.csv')
+# Merge lại thành 1 bảng duy nhất theo object_id
+# Lưu ý: Thứ tự dòng có thể khác nhau nếu mày không sort, nên merge là an toàn nhất
+df_oof = oof_cat.merge(oof_lgbm[['object_id', 'lgbm_prob']], on='object_id')
+df_oof = df_oof.merge(oof_xgb[['object_id', 'xgb_prob']], on='object_id')
 
-# Loại bỏ các cột không train
-DROP_COLS = ['object_id', 'split', 'target', 'SpecType', 'English Translation', 'Z_err']
-features = [c for c in train_df.columns if c not in DROP_COLS]
+y_true = df_oof['target'].values
 
-X = train_df[features]
-y = train_df['target']
-X_test = test_df[features]
+# 2. Load các file Test Prediction
+pred_cat = pd.read_csv('pred_catboost.csv')
+pred_lgbm = pd.read_csv('pred_lgbm.csv')
+pred_xgb = pd.read_csv('pred_xgb.csv')
 
-# Xử lý NaN cho CatBoost (CatBoost thích số cực nhỏ thay vì NaN đôi khi)
-X = X.fillna(-999)
-X_test = X_test.fillna(-999)
+# Merge test
+df_test = pred_cat.merge(pred_lgbm[['object_id', 'lgbm_prob']], on='object_id')
+df_test = df_test.merge(pred_xgb[['object_id', 'xgb_prob']], on='object_id')
 
-print(f"Features: {len(features)}")
-print(f"Train shape: {X.shape}")
+print("Load data xong. Bắt đầu tìm trọng số tối ưu...")
 
-# Tỷ lệ scale pos weight
-scale_pos_weight = (y == 0).sum() / (y == 1).sum()
+# 3. Grid Search đơn giản để tìm trọng số (Weights)
+best_score = 0
+best_weights = (0, 0, 0)
+best_threshold = 0.5
 
-# -------------------------------------------------------------------------------------
-# 2. MODEL 1: LIGHTGBM (Retrain)
-# -------------------------------------------------------------------------------------
-print("\n🔥 Training LightGBM...")
-lgb_params = {
-    'objective': 'binary',
-    'metric': 'auc',
-    'boosting_type': 'gbdt',
-    'n_estimators': 3000,
-    'learning_rate': 0.02,
-    'num_leaves': 40,
-    'max_depth': 8,
-    'min_child_samples': 30,
-    'subsample': 0.8,
-    'colsample_bytree': 0.6,
-    'reg_alpha': 0.5,
-    'reg_lambda': 0.5,
-    'scale_pos_weight': scale_pos_weight,
-    'random_state': 42,
-    'n_jobs': -1,
-    'verbose': -1
-}
+# Thử các tỉ lệ khác nhau. Ví dụ: w1 cho cat, w2 cho lgbm, w3 cho xgb
+# Bước nhảy 0.1
+weights_to_try = []
+for i in range(11):
+    for j in range(11):
+        for k in range(11):
+            if i + j + k == 10:  # Tổng phải bằng 10 (tức là 1.0)
+                weights_to_try.append((i / 10, j / 10, k / 10))
 
-folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-lgb_oof = np.zeros(len(X))
-lgb_test_preds = np.zeros(len(X_test))
+for w_cat, w_lgbm, w_xgb in weights_to_try:
+    # Tính xác suất tổng hợp trên OOF
+    blend_prob = (w_cat * df_oof['cat_prob'] +
+                  w_lgbm * df_oof['lgbm_prob'] +
+                  w_xgb * df_oof['xgb_prob'])
 
-for fold, (train_idx, val_idx) in enumerate(folds.split(X, y)):
-    X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
-    X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
+    # Tìm threshold tốt nhất cho bộ weight này
+    # Mẹo: Chỉ cần search sơ qua để đánh giá weight
+    for thresh in np.arange(0.2, 0.8, 0.05):
+        pred_label = (blend_prob >= thresh).astype(int)
+        score = f1_score(y_true, pred_label)
 
-    clf = lgb.LGBMClassifier(**lgb_params)
-    clf.fit(X_train, y_train, eval_set=[(X_val, y_val)], eval_metric='auc',
-            callbacks=[lgb.early_stopping(100, verbose=False)])
+        if score > best_score:
+            best_score = score
+            best_weights = (w_cat, w_lgbm, w_xgb)
+            best_threshold = thresh
 
-    lgb_oof[val_idx] = clf.predict_proba(X_val)[:, 1]
-    lgb_test_preds += clf.predict_proba(X_test)[:, 1] / 5
+print("-" * 30)
+print(f"✅ TÌM THẤY TRỌNG SỐ TỐI ƯU!")
+print(f"CatBoost Weight: {best_weights[0]}")
+print(f"LightGBM Weight: {best_weights[1]}")
+print(f"XGBoost Weight : {best_weights[2]}")
+print(f"Best Threshold : {best_threshold}")
+print(f"Best OOF F1    : {best_score:.5f}")
+print("-" * 30)
 
-print(f"✅ LightGBM OOF AUC: {roc_auc_score(y, lgb_oof):.5f}")
+# 4. Áp dụng trọng số và threshold tìm được vào tập TEST
+print("Đang tạo file submission...")
 
-# -------------------------------------------------------------------------------------
-# 3. MODEL 2: CATBOOST (New)
-# -------------------------------------------------------------------------------------
-print("\n🐱 Training CatBoost...")
-# CatBoost tự xử lý imbalance tốt qua tham số auto_class_weights hoặc scale_pos_weight
-cat_params = {
-    'iterations': 3000,
-    'learning_rate': 0.02,
-    'depth': 6,
-    'l2_leaf_reg': 3,
-    'loss_function': 'Logloss',
-    'eval_metric': 'AUC',
-    'scale_pos_weight': scale_pos_weight,
-    'od_type': 'Iter',  # Overfitting Detector
-    'od_wait': 100,
-    'random_seed': 42,
-    'verbose': False,
-    'allow_writing_files': False
-}
+final_test_prob = (best_weights[0] * df_test['cat_prob'] +
+                   best_weights[1] * df_test['lgbm_prob'] +
+                   best_weights[2] * df_test['xgb_prob'])
 
-cat_oof = np.zeros(len(X))
-cat_test_preds = np.zeros(len(X_test))
+# Chuyển xác suất thành nhãn 0/1 dựa trên best_threshold
+final_preds = (final_test_prob >= best_threshold).astype(int)
 
-for fold, (train_idx, val_idx) in enumerate(folds.split(X, y)):
-    X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
-    X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
+# Tạo file submission
+submission = pd.DataFrame({
+    'object_id': df_test['object_id'],
+    'target': final_preds
+})
 
-    train_pool = Pool(X_train, y_train)
-    val_pool = Pool(X_val, y_val)
-
-    clf = CatBoostClassifier(**cat_params)
-    clf.fit(train_pool, eval_set=val_pool)
-
-    cat_oof[val_idx] = clf.predict_proba(X_val)[:, 1]
-    cat_test_preds += clf.predict_proba(X_test)[:, 1] / 5
-    print(f"   -> Fold {fold + 1} done.")
-
-print(f"✅ CatBoost OOF AUC: {roc_auc_score(y, cat_oof):.5f}")
-
-# -------------------------------------------------------------------------------------
-# 4. ENSEMBLE (BLENDING) & OPTIMIZATION
-# -------------------------------------------------------------------------------------
-print("\n⚗️ Blending Models...")
-
-# Thử nghiệm các tỷ lệ blend khác nhau trên tập OOF
-best_blend_score = 0
-best_w = 0.5
-best_thresh = 0.5
-
-# Grid search tỷ lệ trọng số (w) và threshold
-for w in np.arange(0.1, 1.0, 0.1):
-    blended_oof = (w * lgb_oof) + ((1 - w) * cat_oof)
-
-    # Tìm threshold tốt nhất cho tỷ lệ này
-    for t in np.arange(0.1, 0.95, 0.01):
-        score = f1_score(y, (blended_oof >= t).astype(int))
-        if score > best_blend_score:
-            best_blend_score = score
-            best_w = w
-            best_thresh = t
-
-print(f"🏆 BEST ENSEMBLE RESULT:")
-print(f"Weight: {best_w:.1f} LightGBM + {1 - best_w:.1f} CatBoost")
-print(f"Threshold: {best_thresh:.2f}")
-print(f"Max F1-Score (OOF): {best_blend_score:.5f}")
-
-# -------------------------------------------------------------------------------------
-# 5. SUBMISSION
-# -------------------------------------------------------------------------------------
-# Áp dụng tỷ lệ tối ưu vào tập Test
-final_test_preds = (best_w * lgb_test_preds) + ((1 - best_w) * cat_test_preds)
-final_labels = (final_test_preds >= best_thresh).astype(int)
-
-sub = pd.DataFrame({'object_id': test_df['object_id'], 'prediction': final_labels})
-sample = pd.read_csv('data/sample_submission.csv')
-sub = sample[['object_id']].merge(sub, on='object_id', how='left').fillna(0)
-sub['prediction'] = sub['prediction'].astype(int)
-
-sub.to_csv('submission_ensemble.csv', index=False)
-print("\n💾 Done: submission_ensemble.csv saved!")
+submission.to_csv('submission_ensemble_optimized.csv', index=False)
+print("🎉 Xong! File kết quả: submission_ensemble_optimized.csv")

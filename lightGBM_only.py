@@ -9,7 +9,7 @@ from catboost import CatBoostClassifier, Pool
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score, roc_auc_score
 
-# 0.4580
+# 0.4889
 
 # ======================================================================================
 # 1. HÀM TÍNH TOÁN SHAPE FEATURES (ĐƯỢC TỐI ƯU HÓA VECTOR)
@@ -226,12 +226,23 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         eval_metric='auc',
         callbacks=[lgb.early_stopping(150, verbose=False)]
     )
-
-
-
     oof_preds[val_idx] = clf.predict_proba(X_val)[:, 1]
     test_preds += clf.predict_proba(X_test)[:, 1] / 5
     print(f"Fold {fold + 1} AUC: {roc_auc_score(y_val, oof_preds[val_idx]):.5f}")
+
+
+oof_df = pd.DataFrame()
+oof_df['object_id'] = train_df_adv['object_id']
+oof_df['target'] = y
+oof_df['lgbm_prob'] = oof_preds # Tên biến trong code LightGBM của mày
+
+pred_df = pd.DataFrame()
+pred_df['object_id'] = test_df_adv['object_id']
+pred_df['lgbm_prob'] = test_preds # Tên biến test
+
+oof_df.to_csv('oof_lgbm.csv', index=False)
+pred_df.to_csv('pred_lgbm.csv', index=False)
+print("Đã lưu oof_lgbm.csv và pred_lgbm.csv")
 
 # Tìm Best Threshold (Rất quan trọng)
 thresholds = np.arange(0.1, 0.95, 0.01)
